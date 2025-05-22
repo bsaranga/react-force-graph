@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "check-ref": "live-server --port=8080 --host=localhost --open=../plain_html_version/index.html"
+    "check-ref": "live-server --port=8080 --host=0.0.0.0 --open=../plain_html_version/index.html"
   },
   "dependencies": {
     "@types/d3": "^7.4.3",

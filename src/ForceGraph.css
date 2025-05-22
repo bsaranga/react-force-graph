@@ -1,0 +1,20 @@
+.debug {
+    border: 1px solid tomato;
+}
+
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background-color: #ffffff; 
+}
+
+#graph-container {
+    position: relative;
+    cursor: pointer; 
+    touch-action: none; /* Important for preventing default touch actions like scrolling when interacting with canvas */
+}
+
+#graph-container:active {
+    cursor: grabbing;
+}
