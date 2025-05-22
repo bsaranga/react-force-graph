@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check-ref": "live-server --port=8080 --host=localhost --open=../plain_html_version/index.html"
   },
   "dependencies": {
+    "@types/d3": "^7.4.3",
+    "d3": "^7.9.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

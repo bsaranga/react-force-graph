@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Force-Directed Graph</title>
+    <title>Canvas Force-Directed Graph with Zoom/Pan</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         body {
@@ -14,7 +14,6 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
             min-height: 100vh;
             color: #333;
         }
@@ -23,44 +22,21 @@
             height: 70vh;
             max-width: 1000px;
             max-height: 700px;
-            background-color: #fff;
+            background-color: #fff; 
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            overflow: hidden; /* Ensures SVG doesn't overflow rounded corners */
+            position: relative;
+            cursor: grab; /* Indicate draggable canvas */
         }
-        svg {
-            display: block; /* Removes bottom space under SVG */
+        #graph-container:active {
+            cursor: grabbing;
+        }
+        canvas {
+            display: block;
             width: 100%;
             height: 100%;
-        }
-        .link {
-            stroke: #999;
-            stroke-opacity: 0.6;
-            stroke-width: 1.5px; /* Default stroke width for links */
-            cursor: pointer;
-            transition: stroke 0.2s ease-in-out, stroke-opacity 0.2s ease-in-out, stroke-width 0.2s ease-in-out;
-        }
-        .link:hover {
-            stroke-opacity: 1;
-            stroke-width: 2.5px;
-        }
-        .node { /* Apply cursor to the group as it's now the draggable element */
-            cursor: pointer;
-        }
-        .node circle {
-            stroke: #fff;
-            stroke-width: 1.5px;
-            transition: r 0.2s ease-in-out, fill 0.2s ease-in-out;
-        }
-        .node circle:hover {
-            r: 10px; /* Slightly larger on hover, consider adjusting if base radius changes */
-        }
-        .node text {
-            font-size: 10px;
-            fill: #333;
-            pointer-events: none; /* Text doesn't interfere with node events */
-            text-anchor: middle;
-            dy: 4px; /* Vertical alignment */
+            border-radius: 8px; 
+            background-color: #ffffff; 
         }
         .controls {
             margin-top: 20px;
@@ -71,6 +47,7 @@
             display: flex;
             gap: 10px;
             align-items: center;
+            flex-wrap: wrap; /* Allow controls to wrap on smaller screens */
         }
         .controls input, .controls button {
             padding: 8px 12px;
@@ -96,375 +73,425 @@
             border-radius: 5px;
             box-shadow: 0 1px 5px rgba(0,0,0,0.1);
             font-size: 12px;
-            max-width: 250px; /* Increased width for link info */
+            max-width: 250px;
         }
     </style>
 </head>
 <body>
-    <h1>Interactive Force-Directed Graph</h1>
-    <div id="graph-container"></div>
+    <h1>Canvas Force-Directed Graph with Zoom/Pan</h1>
+    <div id="graph-container">
+        <canvas id="forceGraphCanvas"></canvas>
+    </div>
     <div class="controls">
         <input type="text" id="newNodeId" placeholder="New Node ID">
         <input type="text" id="connectToNodeId" placeholder="Connect to (optional)">
         <button id="addNodeButton">Add Node</button>
+        <button id="resetZoomButton">Reset Zoom</button>
     </div>
     <div id="selectionInfo" class="info-box" style="display:none;">Selected: <span id="selectedElementInfo"></span></div>
 
     <script>
-        class ForceGraph {
-            constructor(containerSelector, initialNodes = [], initialLinks = [], options = {}) {
-                this.containerSelector = containerSelector;
-                this.nodes = JSON.parse(JSON.stringify(initialNodes)); // Deep copy
-                this.links = JSON.parse(JSON.stringify(initialLinks)); // Deep copy
+        class ForceGraphCanvas {
+            constructor(canvasId, initialNodes = [], initialLinks = [], options = {}) {
+                this.canvas = document.getElementById(canvasId);
+                if (!this.canvas) {
+                    console.error(`Canvas element with ID "${canvasId}" not found.`);
+                    return;
+                }
+                this.ctx = this.canvas.getContext('2d');
+                
+                this.nodes = JSON.parse(JSON.stringify(initialNodes));
+                this.links = JSON.parse(JSON.stringify(initialLinks));
 
-                // Default options
                 this.options = {
                     nodeRadius: 8,
-                    linkDistance: 60,
-                    chargeStrength: -150,
+                    linkDistance: 80,
+                    chargeStrength: -200,
                     nodeColor: '#69b3a2',
-                    highlightColor: '#f06292', // For nodes
+                    highlightColor: '#f06292',
+                    linkColor: '#999999',
                     linkStrokeWidth: 1.5,
-                    highlightLinkColor: '#f06292', // For links, same as node for consistency or choose another
-                    highlightLinkStrokeWidth: 3,
+                    highlightLinkColor: '#f06292',
+                    highlightLinkStrokeWidth: 2.5,
+                    textColor: '#333333',
+                    textFontSize: 10,
+                    backgroundColor: '#ffffff',
+                    minZoom: 0.2,
+                    maxZoom: 4,
                     ...options
                 };
 
-                // Event handlers
-                this.onNodeClickCallback = null;
-                this.onLinkClickCallback = null;
-                this.onNodeDragCallback = null; 
-
                 this.selectedNode = null;
                 this.selectedLink = null;
+                this.draggingNode = null;
+                this.wasDragging = false; // Flag to distinguish drag from click
+                this.dpi = window.devicePixelRatio || 1;
+                this.currentTransform = d3.zoomIdentity;
 
                 this._init();
             }
 
             _init() {
-                const container = d3.select(this.containerSelector);
-                if (container.empty()) {
-                    console.error(`Container element "${this.containerSelector}" not found.`);
-                    return;
-                }
-                container.html(''); 
-
-                this.width = container.node().getBoundingClientRect().width;
-                this.height = container.node().getBoundingClientRect().height;
-
-                this.svg = container.append("svg")
-                    .attr("width", this.width)
-                    .attr("height", this.height)
-                    .attr("viewBox", [-this.width / 2, -this.height / 2, this.width, this.height])
-                    .on("click", (event) => { // Click on SVG background to deselect
-                        if (event.target === this.svg.node()) { // Check if the click was directly on the SVG
-                           this._clearSelections();
-                        }
-                    });
-
-
-                this.linkGroup = this.svg.append("g").attr("class", "links");
-                this.nodeGroup = this.svg.append("g").attr("class", "nodes");
+                this._setupCanvas();
 
                 this.simulation = d3.forceSimulation(this.nodes)
                     .force("link", d3.forceLink(this.links).id(d => d.id).distance(this.options.linkDistance))
                     .force("charge", d3.forceManyBody().strength(this.options.chargeStrength))
-                    .force("center", d3.forceCenter(0, 0)) 
-                    .on("tick", this._ticked.bind(this));
+                    .force("center", d3.forceCenter(this._getCSSWidth() / 2, this._getCSSHeight() / 2))
+                    .on("tick", this._draw.bind(this));
 
-                this._updateGraphElements();
+                this._setupZoom(); 
+                this._setupEventListeners(); 
+                this._draw();
             }
 
+            _getCSSWidth() { return this.canvas.width / this.dpi; }
+            _getCSSHeight() { return this.canvas.height / this.dpi; }
+
+            _setupCanvas() {
+                const container = this.canvas.parentElement;
+                const rect = container.getBoundingClientRect();
+                
+                this.canvas.width = rect.width * this.dpi;
+                this.canvas.height = rect.height * this.dpi;
+                this.canvas.style.width = `${rect.width}px`;
+                this.canvas.style.height = `${rect.height}px`;
+            }
+            
+            _setupZoom() {
+                this.zoomBehavior = d3.zoom()
+                    .scaleExtent([this.options.minZoom, this.options.maxZoom])
+                    .filter((event) => {
+                        // Allow zoom only if mousedown is not on a node and it's a primary button
+                        if (event.type === "mousedown") {
+                            // Temporarily get mouse position without relying on full _getMousePos if currentTransform is mid-update
+                            const rect = this.canvas.getBoundingClientRect();
+                            const rawX = event.clientX - rect.left;
+                            const rawY = event.clientY - rect.top;
+                            // Use currentTransform for inversion as it reflects the state *before* this potential zoom event
+                            const worldPos = {
+                                x: this.currentTransform.invertX(rawX),
+                                y: this.currentTransform.invertY(rawY)
+                            };
+                            const node = this._getNodeAtPos(worldPos.x, worldPos.y);
+                            if (node) {
+                                return false; // Prevent zoom if on a node, allowing our drag to take over
+                            }
+                        }
+                        return (!event.ctrlKey && event.button === 0); // Default filter: no Ctrl key, left mouse button
+                    })
+                    .on("zoom", (event) => {
+                        if (this.draggingNode) return; // Do not apply zoom transform if a node is being dragged
+                        this.currentTransform = event.transform;
+                        this._draw();
+                    });
+                
+                d3.select(this.canvas).call(this.zoomBehavior);
+            }
+
+            _setupEventListeners() {
+                d3.select(this.canvas)
+                    .on("mousedown.drag", this._handleMouseDown.bind(this))
+                    .on("mousemove.drag", this._handleMouseMove.bind(this))
+                    .on("mouseup.drag", this._handleMouseUp.bind(this))
+                    .on("mouseout.drag", this._handleMouseOut.bind(this))
+                    .on("click.select", this._handleClick.bind(this)); // Namespaced click for selection
+            }
+
+            _getMousePos(event) {
+                const rect = this.canvas.getBoundingClientRect();
+                const rawX = event.clientX - rect.left;
+                const rawY = event.clientY - rect.top;
+                return {
+                    x: this.currentTransform.invertX(rawX),
+                    y: this.currentTransform.invertY(rawY)
+                };
+            }
+
+            _getNodeAtPos(x, y) {
+                for (let i = this.nodes.length - 1; i >= 0; i--) {
+                    const node = this.nodes[i];
+                    const dx = x - node.x;
+                    const dy = y - node.y;
+                    const radius = this.options.nodeRadius; 
+                    if (dx * dx + dy * dy < radius * radius) {
+                        return node;
+                    }
+                }
+                return null;
+            }
+            
+            _getLinkAtPos(x, y) {
+                const tolerance = 5 / this.currentTransform.k; 
+                for (let i = this.links.length - 1; i >= 0; i--) {
+                    const link = this.links[i];
+                    if (!link.source || !link.target) continue;
+                    const p0 = link.source; const p1 = link.target;
+                    const dx = p1.x - p0.x; const dy = p1.y - p0.y;
+                    const lengthSq = dx * dx + dy * dy;
+                    if (lengthSq === 0) continue; 
+                    let t = ((x - p0.x) * dx + (y - p0.y) * dy) / lengthSq;
+                    t = Math.max(0, Math.min(1, t)); 
+                    const closestX = p0.x + t * dx; const closestY = p0.y + t * dy;
+                    const distSq = (x - closestX) * (x - closestX) + (y - closestY) * (y - closestY);
+                    if (distSq < tolerance * tolerance) return link;
+                }
+                return null;
+            }
+
+            _handleMouseDown(event) {
+                // This event is primarily for node dragging. Zoom panning is handled by d3.zoom after filtering.
+                const pos = this._getMousePos(event);
+                const node = this._getNodeAtPos(pos.x, pos.y);
+
+                if (node) {
+                    // event.stopImmediatePropagation(); // d3.zoom().filter should handle this
+                    this.draggingNode = node;
+                    this.draggingNode.fx = pos.x; 
+                    this.draggingNode.fy = pos.y;
+                    this.simulation.alphaTarget(0.3).restart(); 
+                    if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'start', nodeId: node.id, event });
+                }
+            }
+
+            _handleMouseMove(event) {
+                if (!this.draggingNode) return;
+                const pos = this._getMousePos(event);
+                this.draggingNode.fx = pos.x;
+                this.draggingNode.fy = pos.y;
+                this.wasDragging = true; // Indicate that a drag movement occurred
+                if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'drag', nodeId: this.draggingNode.id, event });
+            }
+
+            _handleMouseUp(event) {
+                if (!this.draggingNode) return;
+                this.simulation.alphaTarget(0); 
+                // Don't clear fx/fy here if it's selected, click handler will manage
+                if (!this.selectedNode || this.selectedNode.id !== this.draggingNode.id) {
+                     // Only clear if it's not the selected node that should remain fixed by click
+                    this.draggingNode.fx = null; 
+                    this.draggingNode.fy = null;
+                }
+                if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'end', nodeId: this.draggingNode.id, event });
+                this.draggingNode = null;
+                // Important: wasDragging is set in mousemove. If mouseup occurs without mousemove, it's a click.
+                // The click handler will run AFTER mouseup.
+            }
+            
+            _handleMouseOut(event) { 
+                if (this.draggingNode) {
+                    if (event.relatedTarget !== this.canvas && !this.canvas.contains(event.relatedTarget)) {
+                        this._handleMouseUp(event); 
+                    }
+                }
+            }
+
+            _handleClick(event) {
+                if (event.defaultPrevented) return; // Click was handled by d3-zoom (e.g. double-click zoom)
+
+                if (this.wasDragging) { // If a drag just ended, don't treat as a selection click
+                    this.wasDragging = false; // Reset flag
+                    return;
+                }
+
+                const pos = this._getMousePos(event);
+                const clickedNode = this._getNodeAtPos(pos.x, pos.y);
+
+                if (clickedNode) {
+                    this._clearSelections({ clearNode: false, clearLink: true });
+                    if (this.selectedNode && this.selectedNode.id === clickedNode.id) {
+                        this.selectedNode.fx = null; // Release fixed position on deselect
+                        this.selectedNode.fy = null;
+                        this.selectedNode = null; 
+                    } else {
+                        if (this.selectedNode) { // Deselect previous node
+                            this.selectedNode.fx = null;
+                            this.selectedNode.fy = null;
+                        }
+                        this.selectedNode = clickedNode;
+                        this.selectedNode.fx = this.selectedNode.x; // Fix position on select
+                        this.selectedNode.fy = this.selectedNode.y;
+                    }
+                    if (this.onNodeClickCallback) this.onNodeClickCallback(this.selectedNode, event);
+                } else {
+                    const clickedLink = this._getLinkAtPos(pos.x, pos.y);
+                    if (clickedLink) {
+                        this._clearSelections({ clearNode: true, clearLink: false });
+                        this.selectedLink = (this.selectedLink === clickedLink) ? null : clickedLink;
+                        if (this.onLinkClickCallback) this.onLinkClickCallback(this.selectedLink, event);
+                    } else {
+                        this._clearSelections(); 
+                    }
+                }
+                this._draw(); 
+            }
+            
             _clearSelections(options = { clearNode: true, clearLink: true }) {
+                let changed = false;
                 if (options.clearNode && this.selectedNode) {
-                    d3.select(this.selectedNode.eventTarget).attr("fill", this.options.nodeColor);
+                    this.selectedNode.fx = null; 
+                    this.selectedNode.fy = null;
                     this.selectedNode = null;
+                    if (this.onNodeClickCallback) this.onNodeClickCallback(null, null);
+                    changed = true;
                 }
                 if (options.clearLink && this.selectedLink) {
-                    d3.select(this.selectedLink.eventTarget)
-                        .style("stroke", this.options.linkDefaultColor || "#999") // Use a default or the general link color
-                        .attr("stroke-opacity", 0.6)
-                        .attr("stroke-width", this.options.linkStrokeWidth);
                     this.selectedLink = null;
+                    if (this.onLinkClickCallback) this.onLinkClickCallback(null, null);
+                    changed = true;
                 }
-                 if (this.onNodeClickCallback && options.clearNode) this.onNodeClickCallback(null, null); // Notify deselection
-                 if (this.onLinkClickCallback && options.clearLink) this.onLinkClickCallback(null, null); // Notify deselection
+                if (changed && !this.simulation.alpha()) this._draw(); // Redraw if selections were cleared and sim is cool
             }
 
+            _draw() {
+                this.ctx.save();
+                // Set transform to identity, then apply DPI, then zoom
+                this.ctx.setTransform(this.dpi, 0, 0, this.dpi, 0, 0); // Apply DPI scaling
+                this.ctx.fillStyle = this.options.backgroundColor;
+                this.ctx.fillRect(0, 0, this._getCSSWidth(), this._getCSSHeight()); // Clear in CSS pixel space
 
-            _updateGraphElements() {
-                // Links
-                this.linkElements = this.linkGroup
-                    .selectAll("line")
-                    .data(this.links, d => `${d.source.id || d.source}-${d.target.id || d.target}`)
-                    .join("line")
-                    .attr("class", "link")
-                    .style("stroke", this.options.linkDefaultColor || "#999") // Ensure consistent default color
-                    .attr("stroke-width", this.options.linkStrokeWidth)
-                    .on("click", (event, d) => {
-                        event.stopPropagation(); // Prevent SVG background click from firing immediately
-                        this._handleLinkClick(event, d);
-                    });
-
-                // Nodes
-                this.nodeElements = this.nodeGroup
-                    .selectAll("g.node")
-                    .data(this.nodes, d => d.id)
-                    .join(
-                        enter => {
-                            const g = enter.append("g")
-                                .attr("class", "node")
-                                .call(this._dragHandler()); 
-
-                            g.append("circle")
-                                .attr("r", this.options.nodeRadius)
-                                .attr("fill", this.options.nodeColor)
-                                .on("click", (event, d) => {
-                                    event.stopPropagation(); // Prevent SVG background click
-                                    this._handleNodeClick(event, d);
-                                });
-
-                            g.append("text")
-                                .text(d => d.id)
-                                .attr("x", 0) 
-                                .attr("y", this.options.nodeRadius + 12); 
-
-                            return g;
-                        },
-                        update => update,
-                        exit => exit.remove()
-                    );
-
-                this.simulation.nodes(this.nodes);
-                this.simulation.force("link").links(this.links);
-            }
-
-            _ticked() {
-                this.linkElements
-                    .attr("x1", d => d.source.x)
-                    .attr("y1", d => d.source.y)
-                    .attr("x2", d => d.target.x)
-                    .attr("y2", d => d.target.y);
-
-                this.nodeElements
-                    .attr("transform", d => `translate(${d.x},${d.y})`);
-            }
-
-            _dragHandler() {
-                const dragstarted = (event, d) => {
-                    if (!event.active) this.simulation.alphaTarget(0.3).restart();
-                    d.fx = d.x; 
-                    d.fy = d.y; 
-                    if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'start', nodeId: d.id, event });
-                };
-
-                const dragged = (event, d) => {
-                    d.fx = event.x;
-                    d.fy = event.y;
-                    if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'drag', nodeId: d.id, event });
-                };
-
-                const dragended = (event, d) => {
-                    if (!event.active) this.simulation.alphaTarget(0);
-                    // Only nullify fx, fy if it wasn't a click that also selected it
-                    // This logic might need refinement if complex interactions are needed
-                    if (!this.selectedNode || this.selectedNode.data.id !== d.id) {
-                         d.fx = null; 
-                         d.fy = null;
-                    }
-                    if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'end', nodeId: d.id, event });
-                };
-
-                return d3.drag()
-                    .on("start", dragstarted)
-                    .on("drag", dragged)
-                    .on("end", dragended);
-            }
-
-            _handleNodeClick(event, d) {
-                this._clearSelections({ clearNode: false, clearLink: true }); // Clear selected link, but not current node yet
-
-                if (this.selectedNode && this.selectedNode.data.id === d.id) {
-                    // Clicking the same node again deselects it
-                    this._clearSelections();
-                } else {
-                    // Select new node
-                    if (this.selectedNode) { // Clear previously selected node if any
-                         d3.select(this.selectedNode.eventTarget).attr("fill", this.options.nodeColor);
-                    }
-                    d3.select(event.currentTarget).attr("fill", this.options.highlightColor);
-                    this.selectedNode = { data: d, eventTarget: event.currentTarget };
-                }
+                // Apply zoom transform (k, x, y are in CSS pixels)
+                this.ctx.translate(this.currentTransform.x, this.currentTransform.y);
+                this.ctx.scale(this.currentTransform.k, this.currentTransform.k);
                 
-                if (this.onNodeClickCallback) {
-                    this.onNodeClickCallback(this.selectedNode ? this.selectedNode.data : null, event);
-                }
-            }
+                // Draw links
+                this.links.forEach(link => {
+                    if (!link.source || !link.target) return;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(link.source.x, link.source.y);
+                    this.ctx.lineTo(link.target.x, link.target.y);
+                    this.ctx.strokeStyle = (this.selectedLink === link) ? this.options.highlightLinkColor : this.options.linkColor;
+                    this.ctx.lineWidth = ((this.selectedLink === link) ? this.options.highlightLinkStrokeWidth : this.options.linkStrokeWidth) / this.currentTransform.k;
+                    this.ctx.stroke();
+                });
 
-            _handleLinkClick(event, d) {
-                this._clearSelections({ clearNode: true, clearLink: false }); // Clear selected node, but not current link yet
+                // Draw nodes and labels
+                this.nodes.forEach(node => {
+                    this.ctx.beginPath();
+                    this.ctx.arc(node.x, node.y, this.options.nodeRadius / this.currentTransform.k, 0, 2 * Math.PI);
+                    this.ctx.fillStyle = (this.selectedNode && this.selectedNode.id === node.id) ? this.options.highlightColor : this.options.nodeColor;
+                    this.ctx.fill();
+                    this.ctx.strokeStyle = '#fff'; 
+                    this.ctx.lineWidth = 1.5 / this.currentTransform.k; 
+                    this.ctx.stroke();
 
-                if (this.selectedLink && this.selectedLink.data === d) { 
-                    // Clicking the same link again deselects it
-                    this._clearSelections();
-                } else {
-                    // Select new link
-                    if (this.selectedLink) { // Clear previously selected link
-                         d3.select(this.selectedLink.eventTarget)
-                            .style("stroke", this.options.linkDefaultColor || "#999")
-                            .attr("stroke-opacity", 0.6)
-                            .attr("stroke-width", this.options.linkStrokeWidth);
+                    if (this.currentTransform.k > 0.5) { 
+                        this.ctx.fillStyle = this.options.textColor;
+                        const fontSize = this.options.textFontSize / this.currentTransform.k; 
+                        this.ctx.font = `${fontSize}px Inter, sans-serif`;
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText(node.id, node.x, node.y + (this.options.nodeRadius / this.currentTransform.k) + fontSize * 0.8);
                     }
-                    d3.select(event.currentTarget)
-                        .style("stroke", this.options.highlightLinkColor)
-                        .attr("stroke-opacity", 1)
-                        .attr("stroke-width", this.options.highlightLinkStrokeWidth);
-                    this.selectedLink = { data: d, eventTarget: event.currentTarget };
-                }
-
-                if (this.onLinkClickCallback) {
-                    this.onLinkClickCallback(this.selectedLink ? this.selectedLink.data : null, event);
-                }
+                });
+                this.ctx.restore(); 
             }
-
-
+            
             addNode(newNodeData, connectToNodeId = null) {
-                if (!newNodeData || !newNodeData.id) {
-                    console.error("New node data must include an 'id'.");
-                    return;
-                }
-                if (this.nodes.find(n => n.id === newNodeData.id)) {
-                    console.warn(`Node with id "${newNodeData.id}" already exists.`);
-                    return;
-                }
+                if (!newNodeData || !newNodeData.id) { console.error("ID required"); return; }
+                if (this.nodes.find(n => n.id === newNodeData.id)) { console.warn("ID exists"); return; }
 
-                let initialX = 0;
-                let initialY = 0;
+                const viewCenterX = this.currentTransform.invertX(this._getCSSWidth() / 2);
+                const viewCenterY = this.currentTransform.invertY(this._getCSSHeight() / 2);
+                let initialX = viewCenterX, initialY = viewCenterY;
+
                 if (connectToNodeId) {
                     const targetNode = this.nodes.find(n => n.id === connectToNodeId);
                     if (targetNode) {
                         initialX = targetNode.x + (Math.random() - 0.5) * 20;
                         initialY = targetNode.y + (Math.random() - 0.5) * 20;
                     }
-                } else { 
-                    initialX = (Math.random() - 0.5) * (this.width / 4);
-                    initialY = (Math.random() - 0.5) * (this.height / 4);
+                } else {
+                    initialX += (Math.random() - 0.5) * 50 / this.currentTransform.k;
+                    initialY += (Math.random() - 0.5) * 50 / this.currentTransform.k;
                 }
-
-                const completeNewNode = { ...newNodeData, x: initialX, y: initialY, fx: initialX, fy: initialY }; 
+                
+                const completeNewNode = { ...newNodeData, x: initialX, y: initialY, fx: initialX, fy: initialY };
                 this.nodes.push(completeNewNode);
 
                 if (connectToNodeId) {
                     const targetNodeExists = this.nodes.find(n => n.id === connectToNodeId);
-                    if (targetNodeExists) {
-                        this.links.push({ source: newNodeData.id, target: connectToNodeId });
-                    } else {
-                        console.warn(`Cannot connect to non-existent node "${connectToNodeId}".`);
-                    }
+                    if (targetNodeExists) this.links.push({ source: completeNewNode, target: targetNodeExists });
+                    else console.warn("Target node not found");
                 }
 
-                this._updateGraphElements();
+                this.simulation.nodes(this.nodes); 
+                this.simulation.force("link").links(this.links); 
                 this.simulation.alpha(0.3).restart();
 
                 setTimeout(() => {
                     const node = this.nodes.find(n => n.id === newNodeData.id);
-                    if (node) {
-                        node.fx = null;
-                        node.fy = null;
-                    }
-                    if (this.simulation.alpha() < this.simulation.alphaMin()) { 
-                        this.simulation.alpha(0.1).restart(); 
-                     }
+                    if (node) { node.fx = null; node.fy = null; }
+                    if (this.simulation.alpha() < this.simulation.alphaMin()) this.simulation.alpha(0.1).restart();
                 }, 100);
             }
 
             removeNode(nodeId) {
                 const nodeIndex = this.nodes.findIndex(n => n.id === nodeId);
-                if (nodeIndex === -1) {
-                    console.warn(`Node with id "${nodeId}" not found for removal.`);
-                    return;
-                }
-                 // If the node being removed is selected, clear selection
-                if (this.selectedNode && this.selectedNode.data.id === nodeId) {
-                    this._clearSelections({ clearNode: true, clearLink: false }); // Only clear node part
-                }
-
+                if (nodeIndex === -1) return;
+                if (this.selectedNode && this.selectedNode.id === nodeId) this._clearSelections({clearNode: true, clearLink: false});
+                const nodeToRemove = this.nodes[nodeIndex];
                 this.nodes.splice(nodeIndex, 1);
-                
-                // Also remove links connected to this node and clear link selection if affected
-                const oldLinkCount = this.links.length;
                 this.links = this.links.filter(l => {
-                    const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
-                    const targetId = typeof l.target === 'object' ? l.target.id : l.target;
-                    const isAffected = sourceId === nodeId || targetId === nodeId;
-                    if (isAffected && this.selectedLink && this.selectedLink.data === l) {
-                        this._clearSelections({ clearNode: false, clearLink: true }); // Only clear link part
-                    }
+                    const isAffected = l.source === nodeToRemove || l.target === nodeToRemove;
+                    if (isAffected && this.selectedLink === l) this._clearSelections({clearNode: false, clearLink: true});
                     return !isAffected;
                 });
-
-
-                this._updateGraphElements();
+                this.simulation.nodes(this.nodes);
+                this.simulation.force("link").links(this.links);
                 this.simulation.alpha(0.1).restart();
-            }
-
-            onNodeClick(callback) {
-                this.onNodeClickCallback = callback;
+                if (!this.simulation.alpha()) this._draw();
             }
             
-            onLinkClick(callback) { // New public method
-                this.onLinkClickCallback = callback;
-            }
-
-            onNodeDrag(callback) {
-                this.onNodeDragCallback = callback;
-            }
-
             updateData(newNodes, newLinks) {
                 this._clearSelections();
                 this.nodes = JSON.parse(JSON.stringify(newNodes));
-                this.links = JSON.parse(JSON.stringify(newLinks));
-                this._updateGraphElements();
+                this.links = JSON.parse(JSON.stringify(newLinks)); 
+                const nodeMap = new Map(this.nodes.map(node => [node.id, node]));
+                this.links = this.links.map(link => ({
+                    source: nodeMap.get(typeof link.source === 'string' ? link.source : link.source.id),
+                    target: nodeMap.get(typeof link.target === 'string' ? link.target : link.target.id),
+                    ...link 
+                })).filter(l => l.source && l.target); 
+                this.simulation.nodes(this.nodes);
+                this.simulation.force("link").links(this.links);
                 this.simulation.alpha(1).restart();
+                if (!this.simulation.alpha()) this._draw();
+            }
+
+            resetZoom() {
+                // Smoothly transition to identity transform
+                d3.select(this.canvas)
+                  .transition().duration(750)
+                  .call(this.zoomBehavior.transform, d3.zoomIdentity);
+                // this.currentTransform = d3.zoomIdentity; // Will be set by the zoom event
             }
 
             resize() {
-                const container = d3.select(this.containerSelector);
-                if (container.empty()) return;
-
-                this.width = container.node().getBoundingClientRect().width;
-                this.height = container.node().getBoundingClientRect().height;
-
-                this.svg
-                    .attr("width", this.width)
-                    .attr("height", this.height)
-                    .attr("viewBox", [-this.width / 2, -this.height / 2, this.width, this.height]);
-
-                this.simulation.force("center", d3.forceCenter(0,0));
-                this.simulation.alpha(0.3).restart();
+                this._setupCanvas(); 
+                this.simulation.force("center", d3.forceCenter(this._getCSSWidth() / 2, this._getCSSHeight() / 2));
+                // No need to manually adjust currentTransform here if center force is updated
+                // and graph re-settles. If immediate visual centering of existing transform is needed,
+                // the previous complex logic for transform adjustment could be re-added.
+                this.simulation.alpha(0.3).restart(); 
             }
+
+            onNodeClick(callback) { this.onNodeClickCallback = callback; }
+            onLinkClick(callback) { this.onLinkClickCallback = callback; }
+            onNodeDrag(callback) { this.onNodeDragCallback = callback; }
         }
 
         // --- Example Usage ---
         document.addEventListener('DOMContentLoaded', () => {
-            const initialNodes = [
-                { id: "A" }, { id: "B" }, { id: "C" },
-                { id: "D" }, { id: "E" }
-            ];
+            const initialNodes = [ { id: "A" }, { id: "B" }, { id: "C" }, { id: "D" }, { id: "E" }, { id: "F" }, { id: "G" } ];
             const initialLinks = [
-                { source: "A", target: "B", value: 1 }, { source: "A", target: "C", value: 1 },
-                { source: "B", target: "D", value: 1 }, { source: "C", target: "E", value: 1 },
-                { source: "D", target: "E", value: 1 }
+                { source: "A", target: "B" }, { source: "A", target: "C" }, { source: "B", target: "D" },
+                { source: "C", target: "E" }, { source: "D", target: "E" }, { source: "E", target: "F" },
+                { source: "F", target: "G" }, { source: "G", target: "A" }
             ];
 
-            const graph = new ForceGraph('#graph-container', initialNodes, initialLinks, {
-                nodeRadius: 10,
-                linkDistance: 100,
-                chargeStrength: -250,
-                highlightColor: '#ff4081', 
-                highlightLinkColor: '#2196f3', // Different color for selected links
-                highlightLinkStrokeWidth: 4,
-                linkStrokeWidth: 2
+            const graph = new ForceGraphCanvas('forceGraphCanvas', initialNodes, initialLinks, {
+                nodeRadius: 10, linkDistance: 100, chargeStrength: -250,
+                backgroundColor: '#f8f8f8', highlightColor: '#e91e63', highlightLinkColor: '#03a9f4'
             });
 
             const selectionInfoDiv = document.getElementById('selectionInfo');
@@ -472,58 +499,44 @@
 
             graph.onNodeClick((nodeData, event) => {
                 if (nodeData) {
-                    console.log("Node clicked:", nodeData);
                     selectedElementInfoSpan.textContent = `Node: ${nodeData.id}`;
                     selectionInfoDiv.style.display = 'block';
                 } else {
-                    console.log("Node deselected");
                     selectionInfoDiv.style.display = 'none';
                 }
             });
-
+            
             graph.onLinkClick((linkData, event) => {
                 if (linkData) {
-                    const sourceId = typeof linkData.source === 'object' ? linkData.source.id : linkData.source;
-                    const targetId = typeof linkData.target === 'object' ? linkData.target.id : linkData.target;
-                    console.log("Link clicked:", linkData);
-                    selectedElementInfoSpan.textContent = `Link: ${sourceId} - ${targetId}`;
+                    selectedElementInfoSpan.textContent = `Link: ${linkData.source.id} - ${linkData.target.id}`;
                     selectionInfoDiv.style.display = 'block';
                 } else {
-                    console.log("Link deselected");
-                    selectionInfoDiv.style.display = 'none'; // Hide if nothing is selected
+                    if (!graph.selectedNode) selectionInfoDiv.style.display = 'none';
                 }
             });
 
-            graph.onNodeDrag(({type, nodeId, event}) => {
-                // console.log(`Node drag event: ${type} on node ${nodeId}`);
-            });
-
-            const addNodeButton = document.getElementById('addNodeButton');
-            const newNodeIdInput = document.getElementById('newNodeId');
-            const connectToNodeIdInput = document.getElementById('connectToNodeId');
-
-            addNodeButton.addEventListener('click', () => {
-                const newNodeId = newNodeIdInput.value.trim();
-                const connectTo = connectToNodeIdInput.value.trim() || null;
-
+            document.getElementById('addNodeButton').addEventListener('click', () => {
+                const newNodeId = document.getElementById('newNodeId').value.trim();
+                const connectTo = document.getElementById('connectToNodeId').value.trim() || null;
                 if (newNodeId) {
                     graph.addNode({ id: newNodeId }, connectTo);
-                    newNodeIdInput.value = '';
-                    connectToNodeIdInput.value = '';
+                    document.getElementById('newNodeId').value = '';
+                    document.getElementById('connectToNodeId').value = '';
                 } else {
                     const controlsDiv = document.querySelector('.controls');
                     let existingMsg = controlsDiv.querySelector('.error-message');
                     if (existingMsg) existingMsg.remove();
-
                     const errorMsg = document.createElement('div');
                     errorMsg.textContent = "Please enter a Node ID.";
-                    errorMsg.style.color = 'red';
-                    errorMsg.style.fontSize = '12px';
-                    errorMsg.style.marginLeft = '10px';
+                    errorMsg.style.color = 'red'; errorMsg.style.fontSize = '12px'; errorMsg.style.marginLeft = '10px';
                     errorMsg.classList.add('error-message');
-                    addNodeButton.insertAdjacentElement('afterend', errorMsg);
+                    document.getElementById('addNodeButton').insertAdjacentElement('afterend', errorMsg);
                     setTimeout(() => errorMsg.remove(), 3000);
                 }
+            });
+            
+            document.getElementById('resetZoomButton').addEventListener('click', () => {
+                graph.resetZoom();
             });
 
             window.addEventListener('resize', () => {
