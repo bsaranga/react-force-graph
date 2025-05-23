@@ -214,7 +214,7 @@ class ForceGraphCanvas<T, K> {
 
     _getNodeAtPos(worldX: number, worldY: number) {
         for (let i = this.nodes.length - 1; i >= 0; i--) {
-            const node = this.nodes[i];
+            const node: Node<T> = this.nodes[i];
             const dx = worldX - node.x;
             const dy = worldY - node.y;
             const radius = this.options.nodeRadius; 
@@ -393,17 +393,9 @@ class ForceGraphCanvas<T, K> {
         if (clickedNode) {
             this._clearSelections({ clearNode: false, clearLink: true });
             if (this.selectedNode && this.selectedNode.id === clickedNode.id) {
-                this.selectedNode.fx = null; 
-                this.selectedNode.fy = null;
                 this.selectedNode = null; 
             } else {
-                if (this.selectedNode) { 
-                    this.selectedNode.fx = null;
-                    this.selectedNode.fy = null;
-                }
                 this.selectedNode = clickedNode;
-                this.selectedNode.fx = this.selectedNode.x; 
-                this.selectedNode.fy = this.selectedNode.y;
             }
             if (this.onNodeClickCallback) this.onNodeClickCallback(this.selectedNode, event);
         } else {
