@@ -17,23 +17,24 @@ type GraphOptions = {
     maxZoom: number;
     tapThreshold: number;
     tapTimeout: number;
+    selectionRadius: number;
     [key: string]: any;
 };
 
 type NodeBase = {
     id: string;
-    index: number;
-    x: number;
-    y: number;
-    fx: number | null;
-    fy: number | null;
-    vx: number;
-    vy: number;
+    index?: number;
+    x?: number;
+    y?: number;
+    fx?: number | null;
+    fy?: number | null;
+    vx?: number;
+    vy?: number;
 }
 
 type EdgeBase = {
     id: string;
-    index: number;
+    index?: number;
     source: NodeBase | string;
     target: NodeBase | string;
 }

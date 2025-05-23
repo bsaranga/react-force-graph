@@ -2,13 +2,13 @@
 
 import * as d3 from 'd3';
 import "./ForceGraph.css";
-import { useCallback, useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type { Edge, Node, GraphOptions, NodeBase } from "./Types";
 import { initialLinks, initialNodes } from './SampleData';
 
-type NodeDragCallbackType = (event: { type: string; nodeId: string; event?: MouseEvent | TouchEvent }) => void;
-type NodeClickCallbackType = (node: Node<any> | null, event?: MouseEvent | TouchEvent) => void;
-type LinkClickCallbackType = (link: Edge<any> | null, event?: MouseEvent | TouchEvent) => void;
+type NodeDragCallbackType = (event: { type: string; nodeId: string; event?: PointerEvent }) => void;
+type NodeClickCallbackType = (node: Node<any> | null, event?: PointerEvent) => void;
+type LinkClickCallbackType = (link: Edge<any> | null, event?: PointerEvent) => void;
 
 type NodeData = {
     [key: string]: any;
@@ -27,19 +27,14 @@ class ForceGraphCanvas<T, K> {
     options: GraphOptions;
 
     // Dragging and selection
-    holdThreshold: number = 200; // ms
-    holdStartTime: number | null = null;
-    holdFrameId: number | null = null;
-    heldDown: boolean = false;
-
     selectedNode: Node<T> | null;
     selectedLink: Edge<K> | null;
     draggingNode: Node<T> | null;
     wasDragging: boolean;
     dpi: number;
     currentTransform: d3.ZoomTransform;
-    touchStartPos: { x: number; y: number } | null;
-    touchStartTime: number;
+    activePointers: Map<number, { startX: number, startY: number, startTime: number }>;
+    primaryPointerId: number | null;
     simulation: d3.Simulation<Node<T>, Edge<K>> | null;
     zoomBehavior: d3.ZoomBehavior<Element, unknown> | null;
 
@@ -84,8 +79,8 @@ class ForceGraphCanvas<T, K> {
         this.wasDragging = false; 
         this.dpi = window.devicePixelRatio || 1;
         this.currentTransform = d3.zoomIdentity;
-        this.touchStartPos = null; // For tap detection
-        this.touchStartTime = 0;   // For tap detection
+        this.activePointers = new Map();
+        this.primaryPointerId = null;
 
         this.onNodeDragCallback = null; // Callback for node drag events
         this.onNodeClickCallback = null; // Callback for node click events
@@ -104,25 +99,26 @@ class ForceGraphCanvas<T, K> {
             .on("tick", this._draw.bind(this));
 
         // CUSTOM GRAVITY FORCE (helps pull father nodes back to center)
-        this.simulation.force("gravity", alpha => {
+        this.simulation.force("gravity", () => {
             this.nodes.forEach(d => {
-                const dx = this._getCSSWidth() / 2 - d.x;
-                const dy = this._getCSSHeight() / 2 - d.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const threshold = 4500; // px, only apply full strength if farther than this
-                if (dist > threshold) {
-                    const strength = 0.001;
-                    d.vx += dx * strength;
-                    d.vy += dy * strength;
-                } else {
-                    // Apply weaker force when close to center
-                    const strength = 0.001 * (dist / threshold);
-                    d.vx += dx * strength;
-                    d.vy += dy * strength;
+                if (d.x !== undefined && d.y !== undefined && d.vx !== undefined && d.vy !== undefined) {
+                    const dx = this._getCSSWidth() / 2 - d.x;
+                    const dy = this._getCSSHeight() / 2 - d.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const threshold = 4500; // px, only apply full strength if farther than this
+                    if (dist > threshold) {
+                        const strength = 0.001;
+                        d.vx += dx * strength;
+                        d.vy += dy * strength;
+                    } else {
+                        // Apply weaker force when close to center
+                        const strength = 0.001 * (dist / threshold);
+                        d.vx += dx * strength;
+                        d.vy += dy * strength;
+                    }
                 }
             });
         });
-
 
         this._setupZoom(); 
         this._setupEventListeners(); 
@@ -147,24 +143,29 @@ class ForceGraphCanvas<T, K> {
         this.zoomBehavior = d3.zoom()
             .scaleExtent([this.options.minZoom, this.options.maxZoom])
             .filter((event) => {
-                // Allow zoom if not dragging a node, and it's a primary mouse button or a multi-touch gesture
+                // Allow zoom if not dragging a node
                 if (this.draggingNode) return false;
 
-                if (event.type === "mousedown" && event.button !== 0) return false; // Only primary mouse button
-                if (event.type === "touchstart" && event.touches.length > 1) return true; // Allow pinch-zoom
+                // For pointer events, check if it's a primary pointer and not on a node
+                if (event.type === "pointerdown") {
+                    if (!event.isPrimary) return false; // Only primary pointer
+                    
+                    const rect = this.canvas.getBoundingClientRect();
+                    const rawX = event.clientX - rect.left;
+                    const rawY = event.clientY - rect.top;
+                    const worldPos = {
+                        x: this.currentTransform.invertX(rawX),
+                        y: this.currentTransform.invertY(rawY)
+                    };
+                    const node = this._getNodeAtPos(worldPos.x, worldPos.y);
+                    return !node; // If on a node, filter out zoom to allow drag
+                }
 
-                // For single touchstart or mousedown, check if on a node
-                const rect = this.canvas.getBoundingClientRect();
-                const clientX = event.type === "touchstart" ? event.touches[0].clientX : event.clientX;
-                const clientY = event.type === "touchstart" ? event.touches[0].clientY : event.clientY;
-                const rawX = clientX - rect.left;
-                const rawY = clientY - rect.top;
-                const worldPos = {
-                    x: this.currentTransform.invertX(rawX),
-                    y: this.currentTransform.invertY(rawY)
-                };
-                const node = this._getNodeAtPos(worldPos.x, worldPos.y);
-                return !node; // If on a node, filter out zoom to allow drag
+                // Legacy support for mouse/touch events
+                if (event.type === "mousedown" && event.button !== 0) return false;
+                if (event.type === "touchstart" && event.touches.length > 1) return true;
+
+                return true;
             })
             .on("zoom", (event) => {
                 if (this.draggingNode) return; 
@@ -177,39 +178,21 @@ class ForceGraphCanvas<T, K> {
 
     _setupEventListeners() {
         const canvasEl = d3.select(this.canvas);
-        // Mouse events
+        
+        // Pointer events (unified handling)
         canvasEl
-            .on("mousedown.drag", this._handleMouseDown.bind(this))
-            .on("mousemove.drag", this._handleMouseMove.bind(this))
-            .on("mouseup.drag", this._handleMouseUp.bind(this))
-            .on("mouseout.drag", this._handleMouseOut.bind(this))
-            .on("click.select", this._handleClick.bind(this)); 
-
-        // Touch events
-        canvasEl
-            .on("touchstart.drag", this._handleTouchStart.bind(this))
-            .on("touchmove.drag", this._handleTouchMove.bind(this))
-            .on("touchend.drag", this._handleTouchEnd.bind(this))
-            .on("touchcancel.drag", this._handleTouchEnd.bind(this)); // Treat cancel like end
+            .on("pointerdown.drag", this._handlePointerDown.bind(this))
+            .on("pointermove.drag", this._handlePointerMove.bind(this))
+            .on("pointerup.drag", this._handlePointerUp.bind(this))
+            .on("pointercancel.drag", this._handlePointerCancel.bind(this))
+            .on("pointerleave.drag", this._handlePointerLeave.bind(this))
+            .on("click.select", this._handleClick.bind(this));
     }
 
-    _getPointerPos(event: MouseEvent & TouchEvent, touchIndex = 0) { // Generic for mouse or touch
+    _getPointerPos(event: PointerEvent) {
         const rect = this.canvas.getBoundingClientRect();
-        let clientX, clientY;
-
-        if (event.touches && event.touches.length > 0) {
-            clientX = event.touches[touchIndex].clientX;
-            clientY = event.touches[touchIndex].clientY;
-        } else if (event.changedTouches && event.changedTouches.length > 0) { // For touchend
-            clientX = event.changedTouches[touchIndex].clientX;
-            clientY = event.changedTouches[touchIndex].clientY;
-        } else {
-            clientX = event.clientX;
-            clientY = event.clientY;
-        }
-        
-        const rawX = clientX - rect.left;
-        const rawY = clientY - rect.top;
+        const rawX = event.clientX - rect.left;
+        const rawY = event.clientY - rect.top;
         return {
             screenX: rawX, // Screen coordinates (CSS pixels)
             screenY: rawY,
@@ -218,7 +201,6 @@ class ForceGraphCanvas<T, K> {
         };
     }
 
-
     _getNodeAtPos(worldX: number, worldY: number) {
         let closestNode: Node<T> | null = null;
         let minDistSq = Infinity;
@@ -226,12 +208,14 @@ class ForceGraphCanvas<T, K> {
 
         for (let i = this.nodes.length - 1; i >= 0; i--) {
             const node: Node<T> = this.nodes[i];
-            const dx = worldX - node.x;
-            const dy = worldY - node.y;
-            const distSq = dx * dx + dy * dy;
-            if (distSq < (selectionRadius * selectionRadius) && distSq < minDistSq) {
-                minDistSq = distSq;
-                closestNode = node;
+            if (node.x !== undefined && node.y !== undefined) {
+                const dx = worldX - node.x;
+                const dy = worldY - node.y;
+                const distSq = dx * dx + dy * dy;
+                if (distSq < (selectionRadius * selectionRadius) && distSq < minDistSq) {
+                    minDistSq = distSq;
+                    closestNode = node;
+                }
             }
         }
         return closestNode;
@@ -244,114 +228,124 @@ class ForceGraphCanvas<T, K> {
             if (!link.source || !link.target) continue;
             const p0 = link.source as NodeBase;
             const p1 = link.target as NodeBase;
-            const dx = p1.x - p0.x; const dy = p1.y - p0.y;
+            
+            // Check if coordinates are defined
+            if (p0.x === undefined || p0.y === undefined || p1.x === undefined || p1.y === undefined) continue;
+            
+            const dx = p1.x - p0.x; 
+            const dy = p1.y - p0.y;
             const lengthSq = dx * dx + dy * dy;
             if (lengthSq === 0) continue; 
             let t = ((worldX - p0.x) * dx + (worldY - p0.y) * dy) / lengthSq;
             t = Math.max(0, Math.min(1, t)); 
-            const closestX = p0.x + t * dx; const closestY = p0.y + t * dy;
+            const closestX = p0.x + t * dx; 
+            const closestY = p0.y + t * dy;
             const distSq = (worldX - closestX) * (worldX - closestX) + (worldY - closestY) * (worldY - closestY);
             if (distSq < tolerance * tolerance) return link;
         }
         return null;
     }
 
-    private _checkHoldInit(dragClosure: () => void) {
-        const startTime = performance.now();
-        this.holdStartTime = startTime;
-        this.heldDown = true;
-        
-        const checkHold = (timestamp: number) => {
-            if (!this.heldDown) return; // Stop checking if mouse is released
-            const elapsed = timestamp - startTime;
-            if (elapsed >= this.holdThreshold) {
-                dragClosure();
-            } else {
-                this.holdFrameId = requestAnimationFrame(checkHold);
-            }
-        }
+    // --- Pointer Event Handlers ---
+    _handlePointerDown(event: PointerEvent) {
+        if (!event.isPrimary) return; // Only handle primary pointer
 
-        this.holdFrameId = requestAnimationFrame(checkHold);
-    }
-
-    private _checkHoldCancel() {
-        this.heldDown = false;
-        if (this.holdFrameId) {
-            cancelAnimationFrame(this.holdFrameId);
-            this.holdFrameId = null;
-        }
-    }
-
-    // --- Mouse Event Handlers ---
-    _handleMouseDown(event: MouseEvent & TouchEvent) {
-        if (event.button !== 0) return; // Only primary button
-        this._checkHoldInit(() => {
-            this._handleNodeDrag(event);
-        });
-        this.wasDragging = false;
-    }
-
-    _handleNodeDrag(event: MouseEvent & TouchEvent) {
         const pos = this._getPointerPos(event);
         const node = this._getNodeAtPos(pos.worldX, pos.worldY);
 
+        // Track this pointer
+        this.activePointers.set(event.pointerId, {
+            startX: pos.screenX,
+            startY: pos.screenY,
+            startTime: Date.now()
+        });
+
         if (node) {
-            // d3.zoom().filter should prevent zoom if on node, so no need to stopPropagation here usually
+            // Start dragging
+            this.canvas.setPointerCapture(event.pointerId);
+            this.primaryPointerId = event.pointerId;
             this.draggingNode = node;
-            this.draggingNode.fx = pos.worldX; 
+            this.draggingNode.fx = pos.worldX;
             this.draggingNode.fy = pos.worldY;
+            
             if (this.simulation) {
-                this.simulation.alphaTarget(0.3).restart(); 
+                this.simulation.alphaTarget(0.3).restart();
                 if (this.onNodeDragCallback) {
                     this.onNodeDragCallback({ type: 'start', nodeId: node.id, event });
                 }
             } else throw new Error("Simulation not initialized");
         }
+
+        this.wasDragging = false;
     }
 
-    _handleMouseMove(event: MouseEvent & TouchEvent) {
-        if (!this.draggingNode) return;
-        // event.preventDefault(); // May not be needed if touch-action: none is effective
+    _handlePointerMove(event: PointerEvent) {
+        if (!this.draggingNode || event.pointerId !== this.primaryPointerId) return;
+
+        event.preventDefault();
         const pos = this._getPointerPos(event);
         this.draggingNode.fx = pos.worldX;
         this.draggingNode.fy = pos.worldY;
-        this.wasDragging = true; 
-        if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'drag', nodeId: this.draggingNode.id, event });
-    }
-
-    _handleMouseUp(event: MouseEvent & TouchEvent) {
+        this.wasDragging = true;
         
-        this._checkHoldCancel();
-
-        if (!this.draggingNode) return;
-        if (this.simulation) {
-            this.simulation.alphaTarget(0);
-            if (!this.selectedNode || this.selectedNode.id !== this.draggingNode.id) {
-                this.draggingNode.fx = null; 
-                this.draggingNode.fy = null;
-            }
-            if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'end', nodeId: this.draggingNode.id, event });
-            
-            // Click logic is handled by _handleClick, which fires after mouseup if not a drag.
-            // Reset draggingNode here. wasDragging helps _handleClick decide.
-            this.draggingNode = null; 
-        } else throw new Error("Simulation not initialized");
-    }
-    
-    _handleMouseOut(event: MouseEvent & TouchEvent) { 
-        if (this.draggingNode) {
-            if (event.relatedTarget !== this.canvas && !this.canvas.contains(event.relatedTarget as any)) {
-                this._handleMouseUp(event); 
-            }
+        if (this.onNodeDragCallback) {
+            this.onNodeDragCallback({ type: 'drag', nodeId: this.draggingNode.id, event });
         }
     }
 
-    _handleClick(event: MouseEvent & TouchEvent) {
-        // This is the general click handler, fired after mouseup or touchend (if not prevented by zoom)
-        if (event.defaultPrevented) return; 
+    _handlePointerUp(event: PointerEvent) {
+        const pointerInfo = this.activePointers.get(event.pointerId);
+        
+        if (this.draggingNode && event.pointerId === this.primaryPointerId) {
+            if (this.simulation) {
+                this.simulation.alphaTarget(0);
+                if (!this.selectedNode || this.selectedNode.id !== this.draggingNode.id) {
+                    this.draggingNode.fx = null;
+                    this.draggingNode.fy = null;
+                }
+                if (this.onNodeDragCallback) {
+                    this.onNodeDragCallback({ type: 'end', nodeId: this.draggingNode.id, event });
+                }
+            } else throw new Error("Simulation not initialized");
+            
+            this.draggingNode = null;
+            this.primaryPointerId = null;
+        }
 
-        if (this.wasDragging) { 
-            this.wasDragging = false; 
+        // Handle tap/click for selection if it wasn't a drag
+        if (pointerInfo && !this.wasDragging && event.isPrimary) {
+            const pos = this._getPointerPos(event);
+            const timeElapsed = Date.now() - pointerInfo.startTime;
+            const distMoved = Math.sqrt(
+                Math.pow(pos.screenX - pointerInfo.startX, 2) +
+                Math.pow(pos.screenY - pointerInfo.startY, 2)
+            );
+
+            if (timeElapsed < this.options.tapTimeout && distMoved < this.options.tapThreshold) {
+                this._performSelection(pos.worldX, pos.worldY, event);
+            }
+        }
+
+        this.activePointers.delete(event.pointerId);
+        this.wasDragging = false;
+    }
+
+    _handlePointerCancel(event: PointerEvent) {
+        this._handlePointerUp(event);
+    }
+
+    _handlePointerLeave(event: PointerEvent) {
+        if (this.draggingNode && event.pointerId === this.primaryPointerId) {
+            this._handlePointerUp(event);
+        }
+    }
+
+    _handleClick(event: PointerEvent) {
+        // This handles clicks that weren't handled by pointer events
+        if (event.defaultPrevented) return;
+
+        if (this.wasDragging) {
+            this.wasDragging = false;
             return;
         }
 
@@ -359,82 +353,7 @@ class ForceGraphCanvas<T, K> {
         this._performSelection(pos.worldX, pos.worldY, event);
     }
 
-    // --- Touch Event Handlers ---
-    _handleTouchStart(event: MouseEvent & TouchEvent) {
-        if (this.simulation) {
-            if (event.touches.length === 1) { // Single touch
-                event.preventDefault(); // Prevent page scroll on single touch drag
-                const pos = this._getPointerPos(event);
-                const node = this._getNodeAtPos(pos.worldX, pos.worldY);
-
-                this.touchStartPos = { x: pos.screenX, y: pos.screenY }; // Store screen pos for tap detection
-                this.touchStartTime = Date.now();
-
-                if (node) {
-                    this.draggingNode = node;
-                    this.draggingNode.fx = pos.worldX;
-                    this.draggingNode.fy = pos.worldY;
-                    this.simulation.alphaTarget(0.3).restart();
-                    if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'start', nodeId: node.id, event });
-                }
-            } else if (event.touches.length > 1) {
-                // Multi-touch, let d3.zoom handle it (pinch-zoom)
-                this.draggingNode = null; // Ensure no node drag during pinch
-            }
-            this.wasDragging = false;
-        } else throw new Error("Simulation not initialized");
-    }
-
-    _handleTouchMove(event: MouseEvent & TouchEvent) {
-        if (!this.draggingNode || event.touches.length !== 1) return;
-        event.preventDefault(); // Prevent page scroll
-        const pos = this._getPointerPos(event);
-        this.draggingNode.fx = pos.worldX;
-        this.draggingNode.fy = pos.worldY;
-        this.wasDragging = true;
-        if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'drag', nodeId: this.draggingNode.id, event });
-    }
-
-    _handleTouchEnd(event: MouseEvent & TouchEvent) {
-        // event.preventDefault(); // Can sometimes interfere with subsequent interactions if not careful
-        
-        if (this.simulation) {
-            const endedDrag = this.draggingNode !== null; // Was a drag operation active?
-
-            if (this.draggingNode) {
-                this.simulation.alphaTarget(0);
-                if (!this.selectedNode || this.selectedNode.id !== this.draggingNode.id) {
-                    this.draggingNode.fx = null;
-                    this.draggingNode.fy = null;
-                }
-                if (this.onNodeDragCallback) this.onNodeDragCallback({ type: 'end', nodeId: this.draggingNode.id, event });
-                this.draggingNode = null;
-            }
-
-            // Tap detection logic
-            if (event.changedTouches.length === 1 && !this.wasDragging && endedDrag === false) { // Only if it wasn't a drag that just ended
-                const pos = this._getPointerPos(event); // Use changedTouches for touchend
-                const timeElapsed = Date.now() - this.touchStartTime;
-                
-                if (this.touchStartPos) { // Ensure touchStartPos was set
-                    const distMoved = Math.sqrt(
-                        Math.pow(pos.screenX - this.touchStartPos.x, 2) +
-                        Math.pow(pos.screenY - this.touchStartPos.y, 2)
-                    );
-
-                    if (timeElapsed < this.options.tapTimeout && distMoved < this.options.tapThreshold) {
-                        // It's a tap!
-                        this._performSelection(pos.worldX, pos.worldY, event);
-                    }
-                }
-            }
-            this.wasDragging = false; // Reset for next interaction sequence
-            this.touchStartPos = null;
-        }
-    }
-
-
-    _performSelection(worldX: number, worldY: number, event: MouseEvent & TouchEvent) { // Common selection logic for click/tap
+    _performSelection(worldX: number, worldY: number, event: PointerEvent) {
         const clickedNode = this._getNodeAtPos(worldX, worldY);
         if (clickedNode) {
             this._clearSelections({ clearNode: false, clearLink: true });
@@ -460,8 +379,6 @@ class ForceGraphCanvas<T, K> {
     _clearSelections(options = { clearNode: true, clearLink: true }) {
         let changed = false;
         if (options.clearNode && this.selectedNode) {
-            /* this.selectedNode.fx = null; 
-            this.selectedNode.fy = null; */
             this.selectedNode = null;
             if (this.onNodeClickCallback) this.onNodeClickCallback(null, undefined);
             changed = true;
@@ -486,10 +403,16 @@ class ForceGraphCanvas<T, K> {
             
             this.links.forEach(link => {
                 if (!link.source || !link.target) return;
+                const source = link.source as NodeBase;
+                const target = link.target as NodeBase;
+                
+                // Check if coordinates are defined
+                if (source.x === undefined || source.y === undefined || target.x === undefined || target.y === undefined) return;
+                
                 if (this.ctx) {
                     this.ctx.beginPath();
-                    this.ctx.moveTo((link.source as NodeBase).x, (link.source as NodeBase).y);
-                    this.ctx.lineTo((link.target as NodeBase).x, (link.target as NodeBase).y);
+                    this.ctx.moveTo(source.x, source.y);
+                    this.ctx.lineTo(target.x, target.y);
                     this.ctx.strokeStyle = (this.selectedLink === link) ? this.options.highlightLinkColor : this.options.linkColor;
                     this.ctx.lineWidth = ((this.selectedLink === link) ? this.options.highlightLinkStrokeWidth : this.options.linkStrokeWidth) / this.currentTransform.k;
                     this.ctx.stroke();
@@ -497,7 +420,7 @@ class ForceGraphCanvas<T, K> {
             });
 
             this.nodes.forEach(node => {
-                if (this.ctx) {
+                if (this.ctx && node.x !== undefined && node.y !== undefined) {
                     this.ctx.beginPath();
                     this.ctx.arc(node.x, node.y, this.options.nodeRadius / this.currentTransform.k, 0, 2 * Math.PI);
                     this.ctx.fillStyle = (this.selectedNode && this.selectedNode.id === node.id) ? this.options.highlightColor : this.options.nodeColor;
@@ -529,7 +452,7 @@ class ForceGraphCanvas<T, K> {
 
         if (connectToNodeId) {
             const targetNode = this.nodes.find(n => n.id === connectToNodeId);
-            if (targetNode) {
+            if (targetNode && targetNode.x !== undefined && targetNode.y !== undefined) {
                 initialX = targetNode.x + (Math.random() - 0.5) * 20;
                 initialY = targetNode.y + (Math.random() - 0.5) * 20;
             }
@@ -545,7 +468,7 @@ class ForceGraphCanvas<T, K> {
             const targetNodeExists = this.nodes.find(n => n.id === connectToNodeId);
             
             const linkCount = this.links.length;
-            if (targetNodeExists) this.links.push({ id: `edge_${linkCount}`, index: linkCount, source: completeNewNode as Node<T>, target: targetNodeExists as Node<T>});
+            if (targetNodeExists) this.links.push({ id: `edge_${linkCount}`, index: linkCount, source: completeNewNode.id, target: targetNodeExists.id});
             else console.warn("Target node not found");
         }
 
@@ -589,8 +512,8 @@ class ForceGraphCanvas<T, K> {
             this.links = JSON.parse(JSON.stringify(newLinks));
             const nodeMap = new Map(this.nodes.map(node => [node.id, node]));
             this.links = this.links.map(link => ({
-                source: nodeMap.get(typeof link.source === 'string' ? link.source : link.source.id),
-                target: nodeMap.get(typeof link.target === 'string' ? link.target : link.target.id),
+                source: nodeMap.get(typeof link.source === 'string' ? link.source : (link.source as any)?.id),
+                target: nodeMap.get(typeof link.target === 'string' ? link.target : (link.target as any)?.id),
                 ...link
             })).filter(l => l.source && l.target); 
             this.simulation.nodes(this.nodes);
@@ -634,6 +557,9 @@ export default function ForceGraph() {
                 highlightColor: '#e91e63', 
                 highlightLinkColor: '#03a9f4'
             });
+
+        // Store reference to prevent garbage collection
+        (canvasRef.current as any).__forceGraph = forceGraph;
     }, []);
 
     console.log('ForceGraph rendered');
