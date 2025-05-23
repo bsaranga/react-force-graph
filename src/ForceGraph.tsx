@@ -4,6 +4,7 @@ import * as d3 from 'd3';
 import "./ForceGraph.css";
 import { useCallback, useLayoutEffect, useRef } from 'react';
 import type { Edge, Node, GraphOptions, NodeBase } from "./Types";
+import { initialLinks, initialNodes } from './SampleData';
 
 type NodeDragCallbackType = (event: { type: string; nodeId: string; event?: MouseEvent | TouchEvent }) => void;
 type NodeClickCallbackType = (node: Node<any> | null, event?: MouseEvent | TouchEvent) => void;
@@ -565,12 +566,7 @@ export default function ForceGraph() {
 
     useLayoutEffect(() => {
         if (!canvasRef.current) return;
-        const initialNodes: Node<NodeData>[] = [ { id: "A" }, { id: "B" }, { id: "C" }, { id: "D" }, { id: "E" }, { id: "F" }, { id: "G" } ];
-        const initialLinks: Edge<EdgeData>[] = [
-            { id: "edge_1", source: "A", target: "B" }, { id: "edge_2", source: "A", target: "C" }, { id: "edge_3", source: "B", target: "D" },
-            { id: "edge_4", source: "C", target: "E" }, { id: "edge_5", source: "D", target: "E" }, { id: "edge_6", source: "E", target: "F" },
-            { id: "edge_7", source: "F", target: "G" }, { id: "edge_8", source: "G", target: "A" }
-        ];
+        
         const forceGraph = new ForceGraphCanvas<NodeData, EdgeData>(canvasRef.current, initialNodes, initialLinks, {
                 nodeRadius: 10, 
                 linkDistance: 100, 
