@@ -96,6 +96,27 @@ class ForceGraphCanvas<T, K> {
             .force("center", d3.forceCenter(this._getCSSWidth() / 2, this._getCSSHeight() / 2))
             .on("tick", this._draw.bind(this));
 
+        // CUSTOM GRAVITY FORCE (helps pull father nodes back to center)
+        this.simulation.force("gravity", alpha => {
+            this.nodes.forEach(d => {
+                const dx = this._getCSSWidth() / 2 - d.x;
+                const dy = this._getCSSHeight() / 2 - d.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const threshold = 4500; // px, only apply full strength if farther than this
+                if (dist > threshold) {
+                    const strength = 0.001;
+                    d.vx += dx * strength;
+                    d.vy += dy * strength;
+                } else {
+                    // Apply weaker force when close to center
+                    const strength = 0.001 * (dist / threshold);
+                    d.vx += dx * strength;
+                    d.vy += dy * strength;
+                }
+            });
+        });
+
+
         this._setupZoom(); 
         this._setupEventListeners(); 
         this._draw();
