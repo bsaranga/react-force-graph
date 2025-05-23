@@ -1,28 +1,9 @@
-type NodeBase = {
-    id: string;
-    index: number;
-    x: number;
-    y: number;
-    fx: number;
-    fy: number;
-    vx: number;
-    vy: number;
-}
+import type { Node, Edge } from './Types';
 
-type EdgeBase = {
-    id: string;
-    index: number;
-}
-
-type Node = NodeBase & {
-    name?: string;
-    data?: any;
-    [key: string]: any;
-}
-
-interface IGraphState {
-    nodes: Node[],
-    edges: []
+/* eslint-disable @typescript-eslint/no-explicit-any */
+interface IGraphState<T = any, K = any> {
+    nodes: Node<T>[],
+    edges: Edge<K>[]
 }
 
 const GraphState: IGraphState = {
@@ -30,20 +11,20 @@ const GraphState: IGraphState = {
     edges: []
 }
 
-function addNode(node: any) {
+function addNode<T>(node: Node<T>) {
     GraphState.nodes.push(node);
 }
 
-function addEdge(edge: any) {
+function addEdge<K>(edge: Edge<K>) {
     GraphState.edges.push(edge);
 }
 
-function removeNode(nodeId: string) {
-    GraphState.nodes = GraphState.nodes.filter((node: any) => node.id !== nodeId);
+function removeNode<T = any>(nodeId: string) {
+    GraphState.nodes = GraphState.nodes.filter((node: Node<T>) => node.id !== nodeId);
 }
 
-function removeEdge(edgeId: string) {
-    GraphState.edges = GraphState.edges.filter((edge: any) => edge.id !== edgeId);
+function removeEdge<K = any>(edgeId: string) {
+    GraphState.edges = GraphState.edges.filter((edge: Edge<K>) => edge.id !== edgeId);
 }
 
 function clearGraph() {
@@ -53,6 +34,11 @@ function clearGraph() {
 
 function getGraph() {
     return GraphState;
+}
+
+export type {
+    Node,
+    Edge,
 }
 
 export {
