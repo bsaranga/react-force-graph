@@ -26,6 +26,12 @@ class ForceGraphCanvas<T, K> {
     links: Edge<K>[];
     options: GraphOptions;
 
+    // Dragging and selection
+    holdThreshold: number = 200; // ms
+    holdStartTime: number | null = null;
+    holdFrameId: number | null = null;
+    heldDown: boolean = false;
+
     selectedNode: Node<T> | null;
     selectedLink: Edge<K> | null;
     draggingNode: Node<T> | null;
@@ -66,6 +72,7 @@ class ForceGraphCanvas<T, K> {
             maxZoom: 4,
             tapThreshold: 5, // Max movement (px) for a touch to be considered a tap
             tapTimeout: 200, // Max time (ms) for a tap
+            selectionRadius: 50, // Radius for selecting nodes/links
             ...options
         };
 
@@ -213,16 +220,21 @@ class ForceGraphCanvas<T, K> {
 
 
     _getNodeAtPos(worldX: number, worldY: number) {
+        let closestNode: Node<T> | null = null;
+        let minDistSq = Infinity;
+        const selectionRadius = this.options.selectionRadius;
+
         for (let i = this.nodes.length - 1; i >= 0; i--) {
             const node: Node<T> = this.nodes[i];
             const dx = worldX - node.x;
             const dy = worldY - node.y;
-            const radius = this.options.nodeRadius; 
-            if (dx * dx + dy * dy < radius * radius) {
-                return node;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < (selectionRadius * selectionRadius) && distSq < minDistSq) {
+                minDistSq = distSq;
+                closestNode = node;
             }
         }
-        return null;
+        return closestNode;
     }
     
     _getLinkAtPos(worldX: number, worldY: number) {
@@ -244,9 +256,42 @@ class ForceGraphCanvas<T, K> {
         return null;
     }
 
+    private _checkHoldInit(dragClosure: () => void) {
+        const startTime = performance.now();
+        this.holdStartTime = startTime;
+        this.heldDown = true;
+        
+        const checkHold = (timestamp: number) => {
+            if (!this.heldDown) return; // Stop checking if mouse is released
+            const elapsed = timestamp - startTime;
+            if (elapsed >= this.holdThreshold) {
+                dragClosure();
+            } else {
+                this.holdFrameId = requestAnimationFrame(checkHold);
+            }
+        }
+
+        this.holdFrameId = requestAnimationFrame(checkHold);
+    }
+
+    private _checkHoldCancel() {
+        this.heldDown = false;
+        if (this.holdFrameId) {
+            cancelAnimationFrame(this.holdFrameId);
+            this.holdFrameId = null;
+        }
+    }
+
     // --- Mouse Event Handlers ---
     _handleMouseDown(event: MouseEvent & TouchEvent) {
         if (event.button !== 0) return; // Only primary button
+        this._checkHoldInit(() => {
+            this._handleNodeDrag(event);
+        });
+        this.wasDragging = false;
+    }
+
+    _handleNodeDrag(event: MouseEvent & TouchEvent) {
         const pos = this._getPointerPos(event);
         const node = this._getNodeAtPos(pos.worldX, pos.worldY);
 
@@ -262,8 +307,6 @@ class ForceGraphCanvas<T, K> {
                 }
             } else throw new Error("Simulation not initialized");
         }
-
-        this.wasDragging = false;
     }
 
     _handleMouseMove(event: MouseEvent & TouchEvent) {
@@ -277,6 +320,9 @@ class ForceGraphCanvas<T, K> {
     }
 
     _handleMouseUp(event: MouseEvent & TouchEvent) {
+        
+        this._checkHoldCancel();
+
         if (!this.draggingNode) return;
         if (this.simulation) {
             this.simulation.alphaTarget(0);
@@ -408,14 +454,14 @@ class ForceGraphCanvas<T, K> {
                 this._clearSelections(); 
             }
         }
-        this._draw(); 
+        this._draw();
     }
     
     _clearSelections(options = { clearNode: true, clearLink: true }) {
         let changed = false;
         if (options.clearNode && this.selectedNode) {
-            this.selectedNode.fx = null; 
-            this.selectedNode.fy = null;
+            /* this.selectedNode.fx = null; 
+            this.selectedNode.fy = null; */
             this.selectedNode = null;
             if (this.onNodeClickCallback) this.onNodeClickCallback(null, undefined);
             changed = true;
