@@ -21,41 +21,58 @@ type GraphOptions = {
     [key: string]: any;
 };
 
-type NodeBase = {
-    id: string;
-    index?: number;
-    x?: number;
-    y?: number;
-    fx?: number | null;
-    fy?: number | null;
-    vx?: number;
-    vy?: number;
+// Properties that D3 simulation will add/manage for nodes
+interface SimulationNodeData {
+    index?: number; // D3 assigns this
+    x?: number;     // D3 assigns this
+    y?: number;     // D3 assigns this
+    vx?: number;    // D3 assigns this
+    vy?: number;    // D3 assigns this
+    fx?: number | null; // Can be set by user or D3
+    fy?: number | null; // Can be set by user or D3
 }
 
-type EdgeBase = {
-    id: string;
-    index?: number;
-    source: NodeBase | string;
-    target: NodeBase | string;
+// Properties that D3 simulation will use/manage for links
+// N is the type of the node, which itself includes SimulationNodeData
+interface SimulationLinkData<N extends SimulationNodeData> {
+    index?: number;               // D3 assigns this
+    source: string | N;           // Must be node ID or node object
+    target: string | N;           // Must be node ID or node object
 }
 
-type Edge<K> = Partial<EdgeBase> & {
-    id: string;
-    name?: string;
-    data?: K;
-    [key: string]: any;
-}
-
-type Node<T> = Partial<NodeBase> & {
-    id: string;
+// Application-specific node data
+type AppSpecificNode<T> = {
+    id: string; // Mandatory for identification
     name?: string;
     data?: T;
-    [key: string]: any;
+    [key: string]: any; // Allow other custom properties
 }
+
+// Application-specific edge data
+type AppSpecificEdge<K> = {
+    id: string; // Mandatory for identification
+    name?: string;
+    data?: K;
+    [key: string]: any; // Allow other custom properties
+}
+
+// Final Node type: combines app-specific data with D3 simulation data
+type Node<T> = AppSpecificNode<T> & SimulationNodeData;
+
+// Final Edge type: combines app-specific data with D3 simulation data
+// It refers to Node<any> because links connect generic nodes in the simulation context
+type Edge<K> = AppSpecificEdge<K> & SimulationLinkData<Node<any>>;
+
+// Exporting NodeBase for use in ForceGraph.tsx if needed for casting
+// It represents the core D3 properties on a node object within the simulation
+type NodeBase = SimulationNodeData & { id: string };
+
 
 export type {
     GraphOptions,
     Node,
-    NodeBase,
+    NodeBase, // Exporting this for internal casting if necessary
     Edge,
+    SimulationNodeData, // Exporting for clarity or advanced use
+    SimulationLinkData  // Exporting for clarity or advanced use
 }

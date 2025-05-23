@@ -323,6 +323,7 @@ class ForceGraphCanvas<T, K> {
 
             if (timeElapsed < this.options.tapTimeout && distMoved < this.options.tapThreshold) {
                 this._performSelection(pos.worldX, pos.worldY, event);
+                event.preventDefault(); // Prevent the subsequent "click" event
             }
         }
 
@@ -511,11 +512,16 @@ class ForceGraphCanvas<T, K> {
             this.nodes = JSON.parse(JSON.stringify(newNodes));
             this.links = JSON.parse(JSON.stringify(newLinks));
             const nodeMap = new Map(this.nodes.map(node => [node.id, node]));
-            this.links = this.links.map(link => ({
-                source: nodeMap.get(typeof link.source === 'string' ? link.source : (link.source as any)?.id),
-                target: nodeMap.get(typeof link.target === 'string' ? link.target : (link.target as any)?.id),
-                ...link
-            })).filter(l => l.source && l.target); 
+            this.links = this.links.map(originalLink => {
+                const { source: oldSource, target: oldTarget, ...restOfLink } = originalLink;
+                const resolvedSource = nodeMap.get(typeof oldSource === 'string' ? oldSource : (oldSource as Node<any>).id);
+                const resolvedTarget = nodeMap.get(typeof oldTarget === 'string' ? oldTarget : (oldTarget as Node<any>).id);
+                return {
+                    ...restOfLink,
+                    source: resolvedSource,
+                    target: resolvedTarget
+                };
+            }).filter(l => l.source && l.target) as Edge<K>[];
             this.simulation.nodes(this.nodes);
             (this.simulation.force("link") as any).links(this.links);
             this.simulation.alpha(1).restart();
