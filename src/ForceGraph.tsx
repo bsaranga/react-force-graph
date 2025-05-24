@@ -248,6 +248,10 @@ class ForceGraphCanvas<T, K> {
 
     // --- Pointer Event Handlers ---
     _handlePointerDown(event: PointerEvent) {
+        const debugElement = document.getElementById('debug_info');
+        debugElement!.innerHTML = `Pointer Type: ${event.pointerType}`;
+        debugElement!.innerHTML += `<br>Primary Event: ${event.isPrimary}`;
+        
         if (!event.isPrimary) return; // Only handle primary pointer
 
         const pos = this._getPointerPos(event);
@@ -343,6 +347,9 @@ class ForceGraphCanvas<T, K> {
 
     _handleClick(event: PointerEvent) {
         // This handles clicks that weren't handled by pointer events
+        const debugElement = document.getElementById('debug_info');
+        debugElement!.innerHTML += `<br>Bubbled to click event..`;
+        debugElement!.innerHTML += `<br>Default Prevented: ${event.defaultPrevented}`;
         if (event.defaultPrevented) return;
 
         if (this.wasDragging) {
@@ -571,6 +578,23 @@ export default function ForceGraph() {
     console.log('ForceGraph rendered');
 
     return <>
+        <div style={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            background: 'rgba(70 70 70 / 0.85)',
+            color: '#FFFFFF',
+            fontSize: 12,
+            padding: '8px 12px',
+            borderRadius: 6,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+            zIndex: 10,
+            pointerEvents: 'none',
+            maxWidth: 500,
+            fontFamily: 'Inter, sans-serif',
+        }}>
+            <div id='debug_info'></div>
+        </div>
         <div id="graph-container">
             <canvas ref={canvasRef} id="forceGraphCanvas"></canvas>
         </div>
