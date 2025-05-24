@@ -26,17 +26,22 @@ class ForceGraphCanvas<T, K> {
     links: Edge<K>[];
     options: GraphOptions;
 
-    // Dragging and selection
     selectedNode: Node<T> | null;
     selectedLink: Edge<K> | null;
     draggingNode: Node<T> | null;
     wasDragging: boolean;
     dpi: number;
     currentTransform: d3.ZoomTransform;
-    activePointers: Map<number, { startX: number, startY: number, startTime: number }>;
+    activePointers: Map<number, { startX: number, startY: number, startTime: number, startTimestamp: number }>;
     primaryPointerId: number | null;
     simulation: d3.Simulation<Node<T>, Edge<K>> | null;
     zoomBehavior: d3.ZoomBehavior<Element, unknown> | null;
+
+    private holdThreshold: number;
+    private holdStartTime: number | null;
+    private holdFrameId: number | null;
+    private heldDown: boolean;
+    private elapsedTime: number | null;
 
     onNodeDragCallback: NodeDragCallbackType | null;
     onNodeClickCallback: NodeClickCallbackType | null;
@@ -81,6 +86,13 @@ class ForceGraphCanvas<T, K> {
         this.currentTransform = d3.zoomIdentity;
         this.activePointers = new Map();
         this.primaryPointerId = null;
+
+        // Drag differentiation
+        this.holdThreshold = 100;
+        this.holdStartTime = null
+        this.holdFrameId = null;
+        this.heldDown = false;
+        this.elapsedTime = null; // Time elapsed since the last drag event
 
         this.onNodeDragCallback = null; // Callback for node drag events
         this.onNodeClickCallback = null; // Callback for node click events
@@ -246,6 +258,22 @@ class ForceGraphCanvas<T, K> {
         return null;
     }
 
+    private _initCheckHold(pointerId: number, draggableClosure: () => void) {
+        
+        const _checkHold = (timestamp: number) => {
+            if (!this.activePointers.has(pointerId)) return; // If pointer is not active, cancel
+            this.elapsedTime = timestamp - this.activePointers.get(pointerId)!.startTimestamp;
+            console.log(this.elapsedTime);
+            if (this.elapsedTime >= this.holdThreshold) {
+                draggableClosure();
+            } else {
+                this.holdFrameId = requestAnimationFrame(_checkHold);
+            }
+        }
+
+        return _checkHold;
+    }
+
     // --- Pointer Event Handlers ---
     _handlePointerDown(event: PointerEvent) {
         const debugElement = document.getElementById('debug_info');
@@ -255,16 +283,21 @@ class ForceGraphCanvas<T, K> {
         if (!event.isPrimary) return; // Only handle primary pointer
 
         const pos = this._getPointerPos(event);
-        const node = this._getNodeAtPos(pos.worldX, pos.worldY);
 
         // Track this pointer
         this.activePointers.set(event.pointerId, {
             startX: pos.screenX,
             startY: pos.screenY,
-            startTime: Date.now()
+            startTime: Date.now(),
+            startTimestamp: performance.now()
         });
 
-        if (node) {
+        const checkHold = this._initCheckHold(event.pointerId, () => (console.log("Hold Detected")))
+        this.holdFrameId = requestAnimationFrame(checkHold);
+
+        const node = this._getNodeAtPos(pos.worldX, pos.worldY);
+
+        /* if (node) {
             // Start dragging
             this.canvas.setPointerCapture(event.pointerId);
             this.primaryPointerId = event.pointerId;
@@ -278,12 +311,13 @@ class ForceGraphCanvas<T, K> {
                     this.onNodeDragCallback({ type: 'start', nodeId: node.id, event });
                 }
             } else throw new Error("Simulation not initialized");
-        }
+        } */
 
         this.wasDragging = false;
     }
 
     _handlePointerMove(event: PointerEvent) {
+        console.log("Pointer Move");
         if (!this.draggingNode || event.pointerId !== this.primaryPointerId) return;
 
         event.preventDefault();
@@ -298,6 +332,15 @@ class ForceGraphCanvas<T, K> {
     }
 
     _handlePointerUp(event: PointerEvent) {
+        
+        console.log("Pointer Up");
+        this.heldDown = false;
+        if (this.holdFrameId) {
+            cancelAnimationFrame(this.holdFrameId);
+            this.holdFrameId = null;
+            this.elapsedTime = null;
+        }
+
         const pointerInfo = this.activePointers.get(event.pointerId);
         
         if (this.draggingNode && event.pointerId === this.primaryPointerId) {
